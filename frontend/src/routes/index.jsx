@@ -13,6 +13,7 @@ import IssuesPage from "../pages/issues/IssuesPage";
 import EquipmentPage from "../pages/equipment/EquipmentPage";
 import EnvironmentPage from "../pages/environment/EnvironmentPage";
 import AcademicSupportPage from "../pages/support/AcademicSupportPage";
+import AdminEquipmentPage from "../pages/admin/AdminEquipmentPage";
 
 const router = createBrowserRouter([
     {
@@ -50,6 +51,14 @@ const router = createBrowserRouter([
                     {
                         path: "support/*",
                         element: <AcademicSupportPage />
+                    },
+                    {
+                        path: "admin/equipment-bookings",
+                        element: (
+                            <RequireRole allowedRoles={["ADMIN"]}>
+                                <AdminEquipmentPage />
+                            </RequireRole>
+                        )
                     }
                 ]
             }

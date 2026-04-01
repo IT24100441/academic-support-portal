@@ -34,7 +34,6 @@ import static org.springframework.http.HttpStatus.CONFLICT;
 @RequiredArgsConstructor
 public class AuthService {
 
-  private static final Pattern STUDENT_EMAIL_REGEX = Pattern.compile("^student\\d+@gmail\\.com$");
   private static final Pattern VALID_EMAIL_REGEX = Pattern.compile("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
 
   private final UserRepository userRepository;
@@ -175,13 +174,7 @@ public class AuthService {
   }
 
   private void validateEmailByRole(String email, Role role) {
-    if (role == Role.STUDENT && !STUDENT_EMAIL_REGEX.matcher(email).matches()) {
-      throw new ResponseStatusException(BAD_REQUEST, "Email must be in format studentXXXXXX@gmail.com");
-    }
-    if (role == Role.TUTOR && !VALID_EMAIL_REGEX.matcher(email).matches()) {
-      throw new ResponseStatusException(BAD_REQUEST, "Invalid email address");
-    }
-    if ((role == Role.ADMIN || role == null) && !VALID_EMAIL_REGEX.matcher(email).matches()) {
+    if (!VALID_EMAIL_REGEX.matcher(email).matches()) {
       throw new ResponseStatusException(BAD_REQUEST, "Invalid email address");
     }
   }
