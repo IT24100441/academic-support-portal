@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Thermometer, Users } from 'lucide-react';
+import {
+  Thermometer, Users, Cpu, Monitor, Sun, Tv,
+  Wind, Volume2, Smile, Activity
+} from 'lucide-react';
 import { studySpotApi } from '../../api/studySpotApi';
 import { environmentApi } from '../../api/environmentApi';
 
@@ -15,6 +18,241 @@ const getOccupancyBadge = (status) => {
   if (status === 'FULL' || status === 'NEARLY_FULL' || status === 'NEARLY FULL') return 'bg-red-50 text-red-700 border-red-200';
   if (status === 'ACTIVE') return 'bg-amber-50 text-amber-700 border-amber-200';
   return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+};
+
+// ─── Prediction Engine ────────────────────────────────────────────────────────
+// Physics-inspired model based on ASHRAE thermal comfort standards:
+//   • Each person  → +0.18 °C body heat, +30 ppm CO₂ exhaled, +3.5 dB noise
+//   • Each PC      → +0.12 °C (heat dissipation), +0.8 dB fan noise
+//   • Projector    → +0.9 °C (lamp heat), +6 dB projection fan
+//   • Lighting     → up to +0.4 °C (LED at 100%)
+const predictEnvironment = ({ people, computers, projector, lights, roomCapacity = 20 }) => {
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const temp  = 22.0 + people * 0.18 + computers * 0.12 + (projector ? 0.9 : 0) + (lights / 100) * 0.4;
+  const co2   = 420  + people * 30;
+  const noise = 30   + people * 3.5  + computers * 0.8  + (projector ? 6 : 0);
+
+  // Score each metric (0-100) then blend into a comfort index
+  const tScore = temp  <= 22 ? 100 : temp  > 26 ? clamp(100 - (temp  - 26) * 12, 0, 100) : 100;
+  const cScore = co2   <= 800 ? 100 : clamp(100 - (co2  - 800) * 0.08, 0, 100);
+  const nScore = noise <= 50  ? 100 : clamp(100 - (noise - 50)  * 2.5,  0, 100);
+  const oScore = roomCapacity > 0 ? clamp(100 - (people / roomCapacity) * 60, 0, 100) : 100;
+  const comfort = Math.round(tScore * 0.4 + cScore * 0.3 + nScore * 0.2 + oScore * 0.1);
+
+  return {
+    temp:        +temp.toFixed(1),
+    co2:         Math.round(co2),
+    noise:       Math.round(noise),
+    comfort:     clamp(comfort, 0, 100),
+    tempStatus:  temp  < 21 ? 'COOL' : temp > 27 ? 'WARM' : 'OPTIMAL',
+    co2Status:   co2   < 600 ? 'FRESH'   : co2   < 1000 ? 'MODERATE' : 'STUFFY',
+    noiseStatus: noise < 45  ? 'QUIET'   : noise < 65   ? 'MODERATE' : 'LOUD',
+  };
+};
+
+// ─── Slider Input ─────────────────────────────────────────────────────────────
+const SliderInput = ({ icon: Icon, label, value, min, max, step = 1, unit, onChange, color = 'text-slate-400' }) => (
+  <div className="space-y-1.5">
+    <div className="flex items-center justify-between">
+      <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+        <Icon size={15} className={color} />{label}
+      </span>
+      <span className="text-sm font-bold text-slate-900 tabular-nums min-w-[4rem] text-right">{value}{unit}</span>
+    </div>
+    <input
+      type="range" min={min} max={max} step={step} value={value}
+      onChange={e => onChange(+e.target.value)}
+      className="w-full h-2 rounded-full appearance-none cursor-pointer accent-indigo-600 bg-slate-100"
+    />
+    <div className="flex justify-between text-[10px] text-slate-400 font-medium">
+      <span>{min}{unit}</span><span>{max}{unit}</span>
+    </div>
+  </div>
+);
+
+// ─── Mini Temperature Sparkline ───────────────────────────────────────────────
+const MiniSparkline = ({ data }) => {
+  if (data.length < 2) return null;
+  const lo = Math.min(...data) - 0.5, hi = Math.max(...data) + 0.5, range = hi - lo || 1;
+  const W = 280, H = 40;
+  const pts = data.map((v, i) =>
+    `${(i / (data.length - 1)) * W},${H - ((v - lo) / range) * (H - 10) - 5}`
+  ).join(' ');
+  return (
+    <div className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
+      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
+        Temperature History (last {data.length} readings)
+      </p>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H }}>
+        <polyline fill="none" stroke="#6366f1" strokeWidth="2.5"
+          strokeLinecap="round" strokeLinejoin="round" points={pts} />
+        {data.map((v, i) => (
+          <circle key={i}
+            cx={(i / (data.length - 1)) * W}
+            cy={H - ((v - lo) / range) * (H - 10) - 5}
+            r={i === data.length - 1 ? 5 : 3} fill="#6366f1"
+            opacity={i === data.length - 1 ? 1 : 0.5}
+          />
+        ))}
+      </svg>
+      <div className="flex justify-between text-[9px] text-slate-400 mt-1 font-medium">
+        <span>← Earlier</span><span>Now →</span>
+      </div>
+    </div>
+  );
+};
+
+// ─── IoT Room Simulator Panel ────────────────────────────────────────────────
+const RoomSimulator = () => {
+  const [people,    setPeople]    = useState(5);
+  const [computers, setComputers] = useState(3);
+  const [lights,    setLights]    = useState(80);
+  const [projector, setProjector] = useState(false);
+  const [liveDrift, setLiveDrift] = useState(false);
+  const [tempHistory, setTempHistory] = useState([22.0]);
+
+  const result = useMemo(
+    () => predictEnvironment({ people, computers, projector, lights, roomCapacity: 30 }),
+    [people, computers, projector, lights]
+  );
+
+  // Grow the sparkline history whenever the predicted temp changes
+  useEffect(() => {
+    setTempHistory(prev => [...prev.slice(-11), result.temp]);
+  }, [result.temp]);
+
+  // Live Drift: gently nudge people/computers every 2s to mimic real sensor noise
+  useEffect(() => {
+    if (!liveDrift) return;
+    const id = setInterval(() => {
+      setPeople(p  => Math.max(0, Math.min(30, p  + (Math.random() > 0.5 ? 1 : -1))));
+      setComputers(c => Math.max(0, Math.min(20, c + (Math.random() > 0.6 ? 1 : -1))));
+    }, 2000);
+    return () => clearInterval(id);
+  }, [liveDrift]);
+
+  const comfortColor = result.comfort >= 75 ? 'text-emerald-600' : result.comfort >= 50 ? 'text-amber-500' : 'text-red-500';
+  const comfortBg    = result.comfort >= 75 ? 'bg-emerald-50 border-emerald-200' : result.comfort >= 50 ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200';
+  const co2Cls       = result.co2Status === 'STUFFY'   ? 'bg-orange-50 border-orange-200 text-orange-700'
+                     : result.co2Status === 'MODERATE' ? 'bg-amber-50  border-amber-200  text-amber-700'
+                     :                                   'bg-teal-50   border-teal-200   text-teal-700';
+  const noiseCls     = result.noiseStatus === 'LOUD'     ? 'bg-red-50    border-red-200    text-red-700'
+                     : result.noiseStatus === 'MODERATE' ? 'bg-yellow-50 border-yellow-200 text-yellow-700'
+                     :                                     'bg-sky-50    border-sky-200    text-sky-700';
+
+  const presets = [
+    { label: '🏠 Empty Room',     people: 0,  computers: 0,  lights: 20,  projector: false },
+    { label: '📚 Study Group',    people: 8,  computers: 8,  lights: 80,  projector: false },
+    { label: '🎓 Lecture Class',  people: 25, computers: 1,  lights: 100, projector: true  },
+    { label: '🔥 Full Capacity',  people: 30, computers: 20, lights: 100, projector: true  },
+  ];
+
+  const tips = [];
+  if (result.tempStatus === 'WARM') tips.push('🌀 Turn on air conditioning — room temperature is above comfort range.');
+  if (result.tempStatus === 'COOL') tips.push('🔆 Consider enabling heating for better occupant comfort.');
+  if (result.co2Status === 'STUFFY') tips.push('🪟 Open windows or increase ventilation — CO₂ is dangerously high.');
+  else if (result.co2Status === 'MODERATE') tips.push('💨 CO₂ is rising — consider improving airflow.');
+  if (result.noiseStatus === 'LOUD') tips.push('🔇 Noise levels are high — enforce quiet policies or add soundproofing.');
+  if (result.comfort >= 85) tips.push('✅ Room conditions are excellent! No action required.');
+
+  return (
+    <div className="rounded-3xl border-2 border-indigo-100 bg-gradient-to-br from-indigo-50/60 to-white p-6 shadow-sm">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow">
+            <Cpu size={20} />
+          </div>
+          <div>
+            <h3 className="text-lg font-bold text-slate-900">IoT Room Simulator</h3>
+            <p className="text-xs text-slate-500">Adjust parameters to predict live environmental conditions</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-slate-600">Live Drift</span>
+          <button onClick={() => setLiveDrift(v => !v)}
+            className={`relative h-6 w-11 rounded-full transition-colors duration-300 ${liveDrift ? 'bg-indigo-600' : 'bg-slate-200'}`}>
+            <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-all duration-300 ${liveDrift ? 'left-6' : 'left-1'}`} />
+          </button>
+          {liveDrift && (
+            <span className="flex items-center gap-1 text-xs font-bold text-indigo-600 animate-pulse">
+              <Activity size={11} /> Simulating...
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Quick presets */}
+      <div className="flex flex-wrap gap-2 mb-6">
+        {presets.map(p => (
+          <button key={p.label}
+            onClick={() => { setPeople(p.people); setComputers(p.computers); setLights(p.lights); setProjector(p.projector); }}
+            className="rounded-full border border-indigo-200 bg-white px-3 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 transition-colors shadow-sm">
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Two-column layout: inputs | outputs */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {/* ── Inputs ── */}
+        <div className="space-y-5 rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Room Parameters</p>
+          <SliderInput icon={Users}   label="People in Room"   value={people}    min={0} max={30}  unit=" ppl" onChange={setPeople}    color="text-violet-500" />
+          <SliderInput icon={Monitor} label="Active Computers" value={computers} min={0} max={20}  unit=" pcs" onChange={setComputers}  color="text-blue-500"   />
+          <SliderInput icon={Sun}     label="Lighting Level"   value={lights}    min={0} max={100} unit="%"    onChange={setLights}     color="text-amber-400"  />
+          <div className="flex items-center justify-between pt-1">
+            <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+              <Tv size={15} className="text-rose-400" /> Projector
+            </span>
+            <button onClick={() => setProjector(v => !v)}
+              className={`relative h-6 w-11 rounded-full transition-colors duration-300 ${projector ? 'bg-rose-500' : 'bg-slate-200'}`}>
+              <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-all duration-300 ${projector ? 'left-6' : 'left-1'}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* ── Outputs ── */}
+        <div className="space-y-4">
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Predicted Readings</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className={`rounded-2xl border p-4 ${getTempBadge(result.tempStatus)}`}>
+              <div className="flex items-center gap-1.5 mb-1"><Thermometer size={14} /><span className="text-[10px] font-black uppercase tracking-wider">Temp</span></div>
+              <p className="text-2xl font-extrabold tabular-nums">{result.temp}°C</p>
+              <p className="text-[10px] font-semibold mt-1 opacity-80">{result.tempStatus}</p>
+            </div>
+            <div className={`rounded-2xl border p-4 ${co2Cls}`}>
+              <div className="flex items-center gap-1.5 mb-1"><Wind size={14} /><span className="text-[10px] font-black uppercase tracking-wider">CO₂</span></div>
+              <p className="text-2xl font-extrabold tabular-nums">{result.co2} ppm</p>
+              <p className="text-[10px] font-semibold mt-1 opacity-80">{result.co2Status}</p>
+            </div>
+            <div className={`rounded-2xl border p-4 ${noiseCls}`}>
+              <div className="flex items-center gap-1.5 mb-1"><Volume2 size={14} /><span className="text-[10px] font-black uppercase tracking-wider">Noise</span></div>
+              <p className="text-2xl font-extrabold tabular-nums">{result.noise} dB</p>
+              <p className="text-[10px] font-semibold mt-1 opacity-80">{result.noiseStatus}</p>
+            </div>
+            <div className={`rounded-2xl border p-4 ${comfortBg}`}>
+              <div className={`flex items-center gap-1.5 mb-1 ${comfortColor}`}><Smile size={14} /><span className="text-[10px] font-black uppercase tracking-wider">Comfort</span></div>
+              <p className={`text-2xl font-extrabold tabular-nums ${comfortColor}`}>{result.comfort}/100</p>
+              <div className="mt-2 h-1.5 w-full rounded-full bg-white/70 overflow-hidden">
+                <div className={`h-full rounded-full transition-all duration-700 ${result.comfort >= 75 ? 'bg-emerald-500' : result.comfort >= 50 ? 'bg-amber-400' : 'bg-red-500'}`}
+                  style={{ width: `${result.comfort}%` }} />
+              </div>
+            </div>
+          </div>
+          <MiniSparkline data={tempHistory} />
+        </div>
+      </div>
+
+      {/* Recommendations banner */}
+      {tips.length > 0 && (
+        <div className={`mt-5 rounded-2xl border p-4 ${result.comfort >= 75 ? 'bg-emerald-50 border-emerald-200' : result.comfort >= 50 ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200'}`}>
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">Smart Recommendations</p>
+          <ul className="space-y-1">{tips.map((t, i) => <li key={i} className="text-sm text-slate-700 font-medium">{t}</li>)}</ul>
+        </div>
+      )}
+    </div>
+  );
 };
 
 const EnvironmentPage = () => {
@@ -136,7 +374,7 @@ const EnvironmentPage = () => {
                     <p className="text-xs text-slate-500">{room.building} | Floor {room.floor}</p>
                   </div>
                   <div className="text-right">
-                <span className={`inline-block rounded-full border px-2 py-1 text-[10px] font-bold ${getOccupancyBadge(room.status)}`}>
+                    <span className={`inline-block rounded-full border px-2 py-1 text-[10px] font-bold ${getOccupancyBadge(room.status)}`}>
                       {humanizeStatus(room.status)}
                     </span>
                     <p className="mt-1 text-xs text-slate-500">{Math.round(room.occupancyPercent ?? 0)}%</p>
@@ -145,6 +383,9 @@ const EnvironmentPage = () => {
               ))}
             </div>
           </div>
+
+          {/* ── IoT Simulator (Demo) ── */}
+          <RoomSimulator />
         </>
       )}
     </div>
