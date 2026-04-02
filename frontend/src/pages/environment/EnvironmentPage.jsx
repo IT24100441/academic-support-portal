@@ -3,6 +3,7 @@ import {
   Thermometer, Users, Cpu, Monitor, Sun, Tv,
   Wind, Volume2, Smile, Activity
 } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 import { studySpotApi } from '../../api/studySpotApi';
 import { environmentApi } from '../../api/environmentApi';
 
@@ -51,8 +52,8 @@ const predictEnvironment = ({ people, computers, projector, lights, roomCapacity
 };
 
 // ─── Slider Input ─────────────────────────────────────────────────────────────
-const SliderInput = ({ icon: Icon, label, value, min, max, step = 1, unit, onChange, color = 'text-slate-400' }) => (
-  <div className="space-y-1.5">
+const SliderInput = ({ icon: Icon, label, value, min, max, step = 1, unit, onChange, color = 'text-slate-400', disabled = false }) => (
+  <div className={`space-y-1.5 ${disabled ? 'opacity-50' : ''}`}>
     <div className="flex items-center justify-between">
       <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
         <Icon size={15} className={color} />{label}
@@ -62,7 +63,10 @@ const SliderInput = ({ icon: Icon, label, value, min, max, step = 1, unit, onCha
     <input
       type="range" min={min} max={max} step={step} value={value}
       onChange={e => onChange(+e.target.value)}
-      className="w-full h-2 rounded-full appearance-none cursor-pointer accent-indigo-600 bg-slate-100"
+      disabled={disabled}
+      title={disabled ? 'Admin access required' : undefined}
+      className={`w-full h-2 rounded-full appearance-none bg-slate-100
+        ${disabled ? 'cursor-not-allowed' : 'cursor-pointer accent-indigo-600'}`}
     />
     <div className="flex justify-between text-[10px] text-slate-400 font-medium">
       <span>{min}{unit}</span><span>{max}{unit}</span>
@@ -103,7 +107,7 @@ const MiniSparkline = ({ data }) => {
 };
 
 // ─── IoT Room Simulator Panel ────────────────────────────────────────────────
-const RoomSimulator = () => {
+const RoomSimulator = ({ isAdmin = false }) => {
   const [people,    setPeople]    = useState(5);
   const [computers, setComputers] = useState(3);
   const [lights,    setLights]    = useState(80);
@@ -165,16 +169,32 @@ const RoomSimulator = () => {
           </div>
           <div>
             <h3 className="text-lg font-bold text-slate-900">IoT Room Simulator</h3>
-            <p className="text-xs text-slate-500">Adjust parameters to predict live environmental conditions</p>
+            <p className="text-xs text-slate-500">Predict live environmental conditions from room parameters</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold text-slate-600">Live Drift</span>
-          <button onClick={() => setLiveDrift(v => !v)}
-            className={`relative h-6 w-11 rounded-full transition-colors duration-300 ${liveDrift ? 'bg-indigo-600' : 'bg-slate-200'}`}>
-            <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-all duration-300 ${liveDrift ? 'left-6' : 'left-1'}`} />
+          {/* Role badge */}
+          {isAdmin ? (
+            <span className="flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-indigo-700">
+              🛡️ Admin Controls
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+              👁️ View Only
+            </span>
+          )}
+          {/* Live Drift toggle — admin only */}
+          <span className={`text-xs font-semibold ${isAdmin ? 'text-slate-600' : 'text-slate-300'}`}>Live Drift</span>
+          <button
+            onClick={() => isAdmin && setLiveDrift(v => !v)}
+            disabled={!isAdmin}
+            title={isAdmin ? 'Toggle live drift simulation' : 'Admin access required'}
+            className={`relative h-6 w-11 rounded-full transition-colors duration-300
+              ${liveDrift && isAdmin ? 'bg-indigo-600' : 'bg-slate-200'}
+              ${!isAdmin ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}>
+            <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-all duration-300 ${liveDrift && isAdmin ? 'left-6' : 'left-1'}`} />
           </button>
-          {liveDrift && (
+          {liveDrift && isAdmin && (
             <span className="flex items-center gap-1 text-xs font-bold text-indigo-600 animate-pulse">
               <Activity size={11} /> Simulating...
             </span>
@@ -182,12 +202,28 @@ const RoomSimulator = () => {
         </div>
       </div>
 
+      {/* View-only notice for non-admins */}
+      {!isAdmin && (
+        <div className="mb-5 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <span className="mt-0.5 text-base">🔒</span>
+          <div>
+            <p className="text-sm font-bold text-amber-800">View-only mode</p>
+            <p className="text-xs text-amber-700 mt-0.5">Only administrators can change simulator parameters. You can observe the predicted readings below.</p>
+          </div>
+        </div>
+      )}
+
       {/* Quick presets */}
       <div className="flex flex-wrap gap-2 mb-6">
         {presets.map(p => (
           <button key={p.label}
-            onClick={() => { setPeople(p.people); setComputers(p.computers); setLights(p.lights); setProjector(p.projector); }}
-            className="rounded-full border border-indigo-200 bg-white px-3 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 transition-colors shadow-sm">
+            onClick={() => { if (isAdmin) { setPeople(p.people); setComputers(p.computers); setLights(p.lights); setProjector(p.projector); } }}
+            disabled={!isAdmin}
+            title={isAdmin ? `Load "${p.label}" preset` : 'Admin access required'}
+            className={`rounded-full border px-3 py-1 text-xs font-semibold shadow-sm transition-colors
+              ${isAdmin
+                ? 'border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50 cursor-pointer'
+                : 'border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed opacity-60'}`}>
             {p.label}
           </button>
         ))}
@@ -196,18 +232,25 @@ const RoomSimulator = () => {
       {/* Two-column layout: inputs | outputs */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* ── Inputs ── */}
-        <div className="space-y-5 rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Room Parameters</p>
-          <SliderInput icon={Users}   label="People in Room"   value={people}    min={0} max={30}  unit=" ppl" onChange={setPeople}    color="text-violet-500" />
-          <SliderInput icon={Monitor} label="Active Computers" value={computers} min={0} max={20}  unit=" pcs" onChange={setComputers}  color="text-blue-500"   />
-          <SliderInput icon={Sun}     label="Lighting Level"   value={lights}    min={0} max={100} unit="%"    onChange={setLights}     color="text-amber-400"  />
+        <div className={`space-y-5 rounded-2xl border bg-white p-5 shadow-sm ${isAdmin ? 'border-slate-100' : 'border-slate-100 opacity-75'}`}>
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+            Room Parameters {!isAdmin && <span className="ml-1 text-slate-300">(read-only)</span>}
+          </p>
+          <SliderInput icon={Users}   label="People in Room"   value={people}    min={0} max={30}  unit=" ppl" onChange={v => isAdmin && setPeople(v)}    color="text-violet-500" disabled={!isAdmin} />
+          <SliderInput icon={Monitor} label="Active Computers" value={computers} min={0} max={20}  unit=" pcs" onChange={v => isAdmin && setComputers(v)}  color="text-blue-500"   disabled={!isAdmin} />
+          <SliderInput icon={Sun}     label="Lighting Level"   value={lights}    min={0} max={100} unit="%"    onChange={v => isAdmin && setLights(v)}     color="text-amber-400"  disabled={!isAdmin} />
           <div className="flex items-center justify-between pt-1">
-            <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-              <Tv size={15} className="text-rose-400" /> Projector
+            <span className={`flex items-center gap-2 text-sm font-semibold ${isAdmin ? 'text-slate-700' : 'text-slate-400'}`}>
+              <Tv size={15} className={isAdmin ? 'text-rose-400' : 'text-slate-300'} /> Projector
             </span>
-            <button onClick={() => setProjector(v => !v)}
-              className={`relative h-6 w-11 rounded-full transition-colors duration-300 ${projector ? 'bg-rose-500' : 'bg-slate-200'}`}>
-              <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-all duration-300 ${projector ? 'left-6' : 'left-1'}`} />
+            <button
+              onClick={() => isAdmin && setProjector(v => !v)}
+              disabled={!isAdmin}
+              title={isAdmin ? 'Toggle projector' : 'Admin access required'}
+              className={`relative h-6 w-11 rounded-full transition-colors duration-300
+                ${projector && isAdmin ? 'bg-rose-500' : 'bg-slate-200'}
+                ${!isAdmin ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}>
+              <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-all duration-300 ${projector && isAdmin ? 'left-6' : 'left-1'}`} />
             </button>
           </div>
         </div>
@@ -256,6 +299,10 @@ const RoomSimulator = () => {
 };
 
 const EnvironmentPage = () => {
+  const { user } = useAuth();
+  const role = user?.role || (Array.isArray(user?.roles) ? user.roles[0] : null);
+  const isAdmin = role === 'ADMIN';
+
   const [rooms, setRooms] = useState([]);
   const [dashboard, setDashboard] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -385,7 +432,7 @@ const EnvironmentPage = () => {
           </div>
 
           {/* ── IoT Simulator (Demo) ── */}
-          <RoomSimulator />
+          <RoomSimulator isAdmin={isAdmin} />
         </>
       )}
     </div>
